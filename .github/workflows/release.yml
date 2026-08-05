@@ -11,16 +11,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Publish
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build distributions
+        run: |
+          echo "${{ inputs.version }}" > VERSION
+          python -m pip install -U build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Upload distributions to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          echo ${{ inputs.version }} > VERSION
-          python -m venv .venv
-          source .venv/bin/activate
-          python -m pip install -U setuptools wheel
-          python setup.py bdist_wheel
-          python -m pip install -U twine
-          python -m twine upload dist/*
+        run: python -m twine upload dist/*

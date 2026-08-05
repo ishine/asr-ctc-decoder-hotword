@@ -12,6 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .context_policy import AdaptiveGatingConfig, ContextPolicy, DecodingQuality, HotwordStrength
 from .ctc_decoder import CTCDecoder
+from .utils import tokenize_sentencepiece_contexts
 
-__all__ = ["CTCDecoder"]
+__all__ = [
+    "AdaptiveGatingConfig",
+    "CTCDecoder",
+    "ContextPolicy",
+    "DecodingQuality",
+    "HotwordStrength",
+    "tokenize_sentencepiece_contexts",
+]

@@ -15,213 +15,188 @@
 # limitations under the License.
 
 from collections import deque
-from typing import Dict, List, Tuple
+from dataclasses import dataclass
+from operator import index
+from typing import Optional
 
+from .context_policy import ContextPolicy
 from .utils import tokenize
 
 
+@dataclass(frozen=True)
+class ActiveContextCandidates:
+    tokens: tuple[int, ...]
+    competing_count: int
+    truncated: bool
+
+
 class ContextState:
-    """The state in ContextGraph"""
+    """One immutable-topology state in the contextual automaton."""
 
-    def __init__(
-        self,
-        id: int,
-        token: int = -1,
-        token_score: float = 0,
-        node_score: float = 0,
-        output_score: float = 0,
-        is_end: bool = False,
-    ):
-        """Create a ContextState.
+    __slots__ = (
+        "node_id",
+        "token",
+        "transitions",
+        "failure",
+        "own_match",
+        "output",
+    )
 
-        Args:
-          id:
-            The node id, only for visualization now. A node is in [0, graph.num_nodes).
-            The id of the root node is always 0.
-          token:
-            The token id.
-          token_score:
-            The bonus for each token during decoding, which will hopefully
-            boost the token up to survive beam search.
-          node_score:
-            The accumulated bonus from root of graph to current node, it will be
-            used to calculate the score for fail arc.
-          output_score:
-            The total scores of matched phrases, sum of the node_score of all
-            the output node for current node.
-          is_end:
-            True if current token is the end of a context.
-        """
-        self.id = id
+    def __init__(self, node_id: int, token: int = -1):
+        self.node_id = node_id
         self.token = token
-        self.token_score = token_score
-        self.node_score = node_score
-        self.output_score = output_score
-        self.is_end = is_end
-        self.next = {}
-        self.fail = None
+        self.transitions = {}
+        self.failure = None
+        self.own_match = None
         self.output = None
 
 
 class ContextGraph:
-    """The ContextGraph is modified from Aho-Corasick which is mainly
-    a Trie with a fail arc for each node.
-    See https://en.wikipedia.org/wiki/Aho%E2%80%93Corasick_algorithm for more details
-    of Aho-Corasick algorithm.
-
-    A ContextGraph contains some words / phrases that we expect to boost their
-    scores during decoding. If the substring of a decoded sequence matches the word / phrase  # noqa
-    in the ContextGraph, we will give the decoded sequence a bonus to make it survive
-    beam search.
-    """
+    """A compact Aho-Corasick graph over model token IDs."""
 
     def __init__(
         self,
-        contexts: List[str],
-        symbol_table: Dict[str, int],
-        bpe_model: str = None,
-        context_score: float = 6.0,
+        contexts: list[str],
+        symbol_table: dict[str, int],
+        bpe_model: Optional[str] = None,
+        policy: Optional[ContextPolicy] = None,
     ):
-        """Initialize a ContextGraph with the given ``context_score``.
+        self._initialize(tokenize(contexts, symbol_table, bpe_model), policy)
 
-        A root node will be created (**NOTE:** the token of root is hardcoded to -1).
+    @classmethod
+    def from_token_ids(
+        cls,
+        context_token_ids: list[list[int]],
+        *,
+        policy: Optional[ContextPolicy] = None,
+    ) -> "ContextGraph":
+        """Build a graph from token sequences produced by the ASR tokenizer."""
+        graph = cls.__new__(cls)
+        graph._initialize(context_token_ids, policy)
+        return graph
 
-        Args:
-          contexts:
-            A list of context strings.
-          symbol_table:
-            Symbol table for decoding. Used to map the tokens in the context
-            strings to their corresponding integer IDs.
-          bpe_model:
-            BPE model path. Used to tokenize the context.
-          context_score:
-            The bonus score for each token(note: NOT for each word/phrase, it means longer  # noqa
-            word/phrase will have larger bonus score, they have to be matched though).
-        """
-        self.context_score = context_score
-        self.num_nodes = 0
-        self.root = ContextState(self.num_nodes)
-        self.root.fail = self.root
-        self.build_graph(tokenize(contexts, symbol_table, bpe_model))
+    def _initialize(
+        self,
+        context_token_ids: list[list[int]],
+        policy: Optional[ContextPolicy],
+    ) -> None:
+        self.policy = policy or ContextPolicy.conservative()
+        validated_token_ids = self._validate_token_ids(context_token_ids)
+        self.context_count = len(validated_token_ids)
+        self.num_nodes = 1
+        self.root = ContextState(0)
+        self.root.failure = self.root
+        self.states = [self.root]
+        self._build_graph(validated_token_ids)
 
-    def build_graph(self, token_ids: List[List[int]]):
-        """Build the ContextGraph from a list of token list.
-        It first build a trie from the given token lists, then fill the fail arc
-        for each trie node.
+    @staticmethod
+    def _validate_token_ids(context_token_ids: list[list[int]]) -> list[list[int]]:
+        validated = []
+        seen = set()
+        for phrase in context_token_ids:
+            tokens = []
+            for token in phrase:
+                if isinstance(token, bool):
+                    raise TypeError("context token IDs must be integers")
+                try:
+                    token_id = index(token)
+                except TypeError as error:
+                    raise TypeError("context token IDs must be integers") from error
+                if token_id < 0:
+                    raise ValueError("context token IDs must be non-negative")
+                tokens.append(token_id)
+            key = tuple(tokens)
+            if tokens and key not in seen:
+                validated.append(tokens)
+                seen.add(key)
+        return validated
 
-        See https://en.wikipedia.org/wiki/Trie for how to build a trie.
-
-        Args:
-          token_ids:
-            The given token lists to build the ContextGraph, it is a list of token list,
-            each token list contains the token ids for a word/phrase. The token id
-            could be an id of a char (modeling with single Chinese char) or an id
-            of a BPE (modeling with BPEs).
-        """
+    def _build_graph(self, token_ids: list[list[int]]) -> None:
         for tokens in token_ids:
             node = self.root
-            for i, token in enumerate(tokens):
-                if token not in node.next:
+            for token in tokens:
+                if token not in node.transitions:
+                    node.transitions[token] = ContextState(self.num_nodes, token)
                     self.num_nodes += 1
-                    is_end = i == len(tokens) - 1
-                    node_score = node.node_score + self.context_score
-                    node.next[token] = ContextState(
-                        self.num_nodes,
-                        token,
-                        self.context_score,
-                        node_score,
-                        node_score if is_end else 0,
-                        is_end,
-                    )
-                node = node.next[token]
-        self._fill_fail_output()  # AC
+                    self.states.append(node.transitions[token])
+                node = node.transitions[token]
+            node.own_match = (len(tokens), self.policy.completion_bonus)
 
-    def _fill_fail_output(self):
-        """This function fills the fail arc for each trie node, it can be computed
-        in linear time by performing a breadth-first search starting from the root.
-        See https://en.wikipedia.org/wiki/Aho%E2%80%93Corasick_algorithm for the
-        details of the algorithm.
-        """
+        self._fill_failure_and_matches()
+        self.token_ids = frozenset(state.token for state in self.states if state is not self.root)
+        self.max_token_id = max(self.token_ids, default=-1)
+        self.transition_count = sum(len(state.transitions) for state in self.states)
+
+    def _fill_failure_and_matches(self) -> None:
         queue = deque()
-        for token, node in self.root.next.items():
-            node.fail = self.root
+        for node in self.root.transitions.values():
+            node.failure = self.root
             queue.append(node)
         while queue:
-            current_node = queue.popleft()
-            for token, node in current_node.next.items():
-                fail = current_node.fail
-                if token in fail.next:
-                    fail = fail.next[token]
-                else:
-                    fail = fail.fail
-                    while token not in fail.next:
-                        fail = fail.fail
-                        if fail.token == -1:  # root
-                            break
-                    if token in fail.next:
-                        fail = fail.next[token]
-                node.fail = fail
-                # fill the output arc
-                output = node.fail
-                while not output.is_end:
-                    output = output.fail
-                    if output.token == -1:  # root
-                        output = None
-                        break
-                node.output = output
-                node.output_score += 0 if output is None else output.output_score
+            current = queue.popleft()
+            for token, node in current.transitions.items():
+                failure = current.failure
+                while failure is not self.root and token not in failure.transitions:
+                    failure = failure.failure
+                if token in failure.transitions:
+                    failure = failure.transitions[token]
+                node.failure = failure
+                node.output = failure if failure.own_match is not None else failure.output
                 queue.append(node)
 
-    def forward_one_step(self, state: ContextState, token: int) -> Tuple[float, ContextState]:
-        """Search the graph with given state and token.
+    def forward_one_step(
+        self,
+        state: ContextState,
+        token: int,
+    ) -> ContextState:
+        """Advance one token in the automaton."""
+        while state is not self.root and token not in state.transitions:
+            state = state.failure
+        if token in state.transitions:
+            state = state.transitions[token]
+        return state
 
-        Args:
-          state:
-            The given token containing trie node to start.
-          token:
-            The given token.
+    def completed_matches(self, state: ContextState):
+        """Yield longest completions first, bounded by the policy limit."""
+        remaining = self.policy.max_completed_contexts_per_token
+        if state.own_match is not None:
+            yield state.own_match
+            remaining -= 1
+            if remaining == 0:
+                return
+        state = state.output
+        while state is not None and remaining:
+            yield state.own_match
+            remaining -= 1
+            state = state.output
 
-        Returns:
-          Return a tuple of score and next state.
+    def active_candidates(self, state: ContextState, maximum: int) -> ActiveContextCandidates:
+        """Return a bounded, lazily derived set of useful continuation tokens.
+
+        Root transitions are injected only when the complete root branching
+        fits. For a large dictionary, new phrase starts must first be supported
+        by the ordinary acoustic top-k; continuations from active non-root
+        states can still be injected.
         """
-        node = None
-        score = 0
-        # token matched
-        if token in state.next:
-            node = state.next[token]
-            score = node.token_score
-        else:
-            # token not matched
-            # We will trace along the fail arc until it matches the token or reaching
-            # root of the graph.
-            node = state.fail
-            while token not in node.next:
-                node = node.fail
-                if node.token == -1:  # root
-                    break
-
-            if token in node.next:
-                node = node.next[token]
-
-            # The score of the fail path
-            score = node.node_score - state.node_score
-        assert node is not None
-        return (score + node.output_score, node)
-
-    def finalize(self, state: ContextState) -> Tuple[float, ContextState]:
-        """When reaching the end of the decoded sequence, we need to finalize
-        the matching, the purpose is to subtract the added bonus score for the
-        state that is not the end of a word/phrase.
-
-        Args:
-          state:
-            The given state(trie node).
-
-        Returns:
-          Return a tuple of score and next state. If state is the end of a word/phrase
-          the score is zero, otherwise the score is the score of a implicit fail arc
-          to root. The next state is always root.
-        """
-        # The score of the fail arc
-        score = -state.node_score
-        return (score, self.root)
+        if maximum <= 0:
+            return ActiveContextCandidates((), 0, bool(state.transitions))
+        candidates = []
+        seen = set()
+        competing_count = 0
+        current = state
+        while True:
+            transitions = current.transitions
+            competing_count = min(maximum + 1, competing_count + len(transitions))
+            if current is self.root and len(transitions) > maximum - len(candidates):
+                return ActiveContextCandidates(tuple(candidates), competing_count, True)
+            for token in transitions:
+                if token not in seen:
+                    candidates.append(token)
+                    seen.add(token)
+                    if len(candidates) == maximum:
+                        truncated = any(token not in seen for token in transitions) or current is not self.root
+                        return ActiveContextCandidates(tuple(candidates), competing_count, truncated)
+            if current is self.root:
+                break
+            current = current.failure
+        return ActiveContextCandidates(tuple(candidates), competing_count, False)

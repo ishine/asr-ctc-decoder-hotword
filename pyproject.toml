@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asr-decoder"
+authors = [{ name = "Zhendong Peng", email = "pzd17@tsinghua.org.cn" }]
+description = "Streaming CTC decoder with contextual biasing"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["torch"]
+
+[project.optional-dependencies]
+dev = ["build", "pytest", "ruff==0.14.4", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/pengzhendong/asr-decoder"
+Repository = "https://github.com/pengzhendong/asr-decoder"
+Issues = "https://github.com/pengzhendong/asr-decoder/issues"
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
