@@ -92,14 +92,9 @@ SenseVoiceSmall 的一次解码对比；每格为“不开热词 / 开热词”�
 | IS21 other | WER 8.22% / 7.53% | 68.06% / 74.33% | 99.721% / 99.693% | 80.91% / 85.17% |
 | Earnings-22 test | WER 25.10% / 24.98% | 24.87% / 26.97% | 98.567% / 98.677% | 39.72% / 42.36% |
 
-## 开发
-
-```bash
-python -m pip install -e ".[dev]"
-ruff check .
-ruff format --check .
-pytest -q
-python -m build
-```
-
-Apache-2.0 License。
+来源：SenseVoiceSmall 的 [官方仓库](https://github.com/QwenAudio/SenseVoice) 和
+[ModelScope 模型](https://www.modelscope.cn/models/iic/SenseVoiceSmall)；SeACo 的
+[公开热词测试集](https://github.com/R1ckShi/SeACo-Paraformer)；IS21 的
+[官方测试文件与评分脚本](https://github.com/facebookresearch/fbai-speech/tree/main/is21_deep_bias)；
+Earnings-22 的 [Contextual Earnings-22 数据集](https://huggingface.co/datasets/argmaxinc/contextual-earnings22)。
+表格是本项目的复测结果，不是上游项目的官方成绩。
