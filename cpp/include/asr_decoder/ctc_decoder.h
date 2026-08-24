@@ -58,9 +58,26 @@ struct SentencePieceTokenizationResult {
   explicit operator bool() const { return error.empty(); }
 };
 
-SentencePieceTokenizationResult tokenize_sentencepiece_contexts(
-    const std::vector<std::string>& contexts,
-    const SentencePieceConfig& config);
+class SentencePieceTokenizer {
+ public:
+  SentencePieceTokenizer();
+  explicit SentencePieceTokenizer(SentencePieceConfig config);
+  ~SentencePieceTokenizer();
+
+  SentencePieceTokenizer(const SentencePieceTokenizer&);
+  SentencePieceTokenizer& operator=(const SentencePieceTokenizer&);
+  SentencePieceTokenizer(SentencePieceTokenizer&&) noexcept;
+  SentencePieceTokenizer& operator=(SentencePieceTokenizer&&) noexcept;
+
+  bool valid() const;
+  const char* error() const;
+  SentencePieceTokenizationResult tokenize(
+      const std::vector<std::string>& contexts) const;
+
+ private:
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+};
 
 struct DecoderConfig {
   std::vector<std::vector<int>> context_token_ids;
@@ -71,7 +88,7 @@ struct DecoderConfig {
   std::optional<ContextPolicy> context_policy;
   std::vector<int> word_boundary_token_ids;
   std::vector<std::string> contexts;
-  SentencePieceConfig sentencepiece;
+  SentencePieceTokenizer sentencepiece_tokenizer;
 };
 
 struct DecodeOptions {

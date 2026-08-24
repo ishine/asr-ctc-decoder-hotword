@@ -13,13 +13,15 @@ bool normalize_contexts(DecoderConfig& config, std::string& error) {
     error = "provide contexts or context_token_ids, not both";
     return false;
   }
-  if (config.sentencepiece.model_path.empty()) {
-    error = "sentencepiece.model_path is required when contexts are provided";
+  if (!config.sentencepiece_tokenizer.valid()) {
+    error =
+        "a valid sentencepiece_tokenizer is required when contexts are "
+        "provided: " +
+        std::string(config.sentencepiece_tokenizer.error());
     return false;
   }
 
-  auto tokenization =
-      tokenize_sentencepiece_contexts(config.contexts, config.sentencepiece);
+  auto tokenization = config.sentencepiece_tokenizer.tokenize(config.contexts);
   if (!tokenization) {
     error = std::move(tokenization.error);
     return false;
@@ -33,7 +35,7 @@ bool normalize_contexts(DecoderConfig& config, std::string& error) {
   // Streams only need the normalized token IDs. Do not reload the model or
   // copy a potentially large symbol table in create_stream().
   config.contexts.clear();
-  config.sentencepiece = {};
+  config.sentencepiece_tokenizer = {};
   return true;
 }
 

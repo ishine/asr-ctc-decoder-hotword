@@ -53,8 +53,9 @@ int main() {
   // independent-context word-boundary behavior used by Python.
   asr_decoder::SentencePieceConfig direct_config;
   direct_config.model_path = model_path;
-  const auto direct =
-      asr_decoder::tokenize_sentencepiece_contexts(contexts, direct_config);
+  asr_decoder::SentencePieceTokenizer direct_tokenizer(direct_config);
+  CHECK(direct_tokenizer.valid());
+  const auto direct = direct_tokenizer.tokenize(contexts);
   CHECK(direct);
   CHECK(direct.context_token_ids.size() == contexts.size());
   CHECK(direct.context_token_ids[0] ==
@@ -67,8 +68,9 @@ int main() {
   CHECK(direct.context_token_ids[0] != plain_ids);
   auto substring_config = direct_config;
   substring_config.add_word_boundary = false;
-  const auto substring = asr_decoder::tokenize_sentencepiece_contexts(
-      {contexts[0]}, substring_config);
+  const asr_decoder::SentencePieceTokenizer substring_tokenizer(
+      substring_config);
+  const auto substring = substring_tokenizer.tokenize({contexts[0]});
   CHECK(substring);
   CHECK(substring.context_token_ids[0] == plain_ids);
 
@@ -78,8 +80,9 @@ int main() {
   for (int id = 0; id < processor.GetPieceSize(); ++id) {
     mapped_config.symbol_table.emplace(processor.IdToPiece(id), id + 1);
   }
-  const auto mapped =
-      asr_decoder::tokenize_sentencepiece_contexts(contexts, mapped_config);
+  const asr_decoder::SentencePieceTokenizer mapped_tokenizer(mapped_config);
+  CHECK(mapped_tokenizer.valid());
+  const auto mapped = mapped_tokenizer.tokenize(contexts);
   CHECK(mapped);
   CHECK(mapped.context_token_ids.size() == contexts.size());
   for (size_t index = 0; index < contexts.size(); ++index) {
@@ -93,20 +96,31 @@ int main() {
   // pieces must not turn the unknown token into a synthetic word boundary.
   auto unknown_config = direct_config;
   unknown_config.symbol_table = {{"<unk>", 7}};
-  const auto unknown = asr_decoder::tokenize_sentencepiece_contexts(
-      {contexts[0]}, unknown_config);
+  const asr_decoder::SentencePieceTokenizer unknown_tokenizer(unknown_config);
+  const auto unknown = unknown_tokenizer.tokenize({contexts[0]});
   CHECK(unknown);
   CHECK(std::all_of(unknown.context_token_ids[0].begin(),
                     unknown.context_token_ids[0].end(),
                     [](int id) { return id == 7; }));
   CHECK(unknown.word_boundary_token_ids.empty());
 
+  // Copies share the already loaded processor. Hide the model temporarily to
+  // prove that decoder construction and tokenization do not load it again.
+  const auto shared_tokenizer = mapped_tokenizer;
+  const std::string hidden_model_path = model_path + ".loaded";
+  CHECK(std::rename(model_path.c_str(), hidden_model_path.c_str()) == 0);
+  const auto reused = shared_tokenizer.tokenize(contexts);
   asr_decoder::DecoderConfig decoder_config;
   decoder_config.contexts = contexts;
-  decoder_config.sentencepiece = mapped_config;
+  decoder_config.sentencepiece_tokenizer = shared_tokenizer;
   asr_decoder::CTCDecoder decoder(decoder_config);
+  auto stream = decoder.create_stream();
+  const bool model_restored =
+      std::rename(hidden_model_path.c_str(), model_path.c_str()) == 0;
+  CHECK(model_restored);
+  CHECK(reused);
   CHECK(decoder.valid());
-  CHECK(decoder.create_stream().valid());
+  CHECK(stream.valid());
 
   auto ambiguous_config = decoder_config;
   ambiguous_config.context_token_ids = {{1}};
@@ -117,8 +131,9 @@ int main() {
   incomplete_config.symbol_table.erase(processor.IdToPiece(
       encode_independent_context(processor, contexts[0])[0]));
   incomplete_config.symbol_table.erase("<unk>");
-  const auto incomplete = asr_decoder::tokenize_sentencepiece_contexts(
-      {contexts[0]}, incomplete_config);
+  const asr_decoder::SentencePieceTokenizer incomplete_tokenizer(
+      incomplete_config);
+  const auto incomplete = incomplete_tokenizer.tokenize({contexts[0]});
   CHECK(!incomplete);
   return 0;
 }

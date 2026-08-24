@@ -30,24 +30,30 @@ auto result = decoder.greedy_search(values, frames, vocabulary, options);
 推荐直接传入文本热词和声学模型随附的 SentencePiece 模型：
 
 ```cpp
-asr_decoder::DecoderConfig config;
-config.blank_id = 0;
-config.contexts = {"停止", "Live Captions"};
-config.sentencepiece.model_path = "/path/to/sentencepiece.model";
+asr_decoder::SentencePieceConfig tokenizer_config;
+tokenizer_config.model_path = "/path/to/sentencepiece.model";
 
 // 仅当声学模型 token ID 与 SentencePiece ID 不同时设置。例如 CTC 词表
 // 在 ID 0 插入 blank 时，可将每个 SentencePiece piece 精确映射到声学 ID。
-config.sentencepiece.symbol_table = {
+tokenizer_config.symbol_table = {
     {"<blank>", 0}, {"<unk>", 1}, {"▁Live", 42}};
 
+asr_decoder::SentencePieceTokenizer tokenizer(std::move(tokenizer_config));
+if (!tokenizer.valid()) std::fprintf(stderr, "%s\n", tokenizer.error());
+
+asr_decoder::DecoderConfig config;
+config.blank_id = 0;
+config.contexts = {"停止", "Live Captions"};
+config.sentencepiece_tokenizer = tokenizer;
 asr_decoder::CTCDecoder decoder(std::move(config));
 if (!decoder.valid()) std::fprintf(stderr, "%s\n", decoder.error());
 ```
 
-`sentencepiece.symbol_table` 为空时直接使用 SentencePiece ID，前提是它和声学模型输出 ID 完全一致；
+`tokenizer_config.symbol_table` 为空时直接使用 SentencePiece ID，前提是它和声学模型输出 ID 完全一致；
 不为空时会逐 piece 精确映射，缺少 piece 且没有 `<unk>` 时构造失败，不会静默跳过。
 独立热词默认保留 SentencePiece 词首边界语义；确实需要子词内部匹配时，可设置
-`sentencepiece.add_word_boundary = false`。已经由调用方正确编码的热词仍可通过
+`tokenizer_config.add_word_boundary = false`。`SentencePieceTokenizer` 的拷贝共享同一个已加载模型，
+可以在模型生命周期内复用于多个 decoder 和 stream，不会每次重新加载。已经由调用方正确编码的热词仍可通过
 `context_token_ids` 传入，但不能同时设置 `contexts`。
 
 需要与 Python 的高级热词策略逐项对齐时，可以直接配置策略和词边界：

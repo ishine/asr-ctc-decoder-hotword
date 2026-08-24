@@ -5,6 +5,7 @@
 #include <optional>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
 
 #include <sentencepiece_processor.h>
 
@@ -68,15 +69,60 @@ std::optional<int> map_piece_id(
 
 }  // namespace
 
-SentencePieceTokenizationResult tokenize_sentencepiece_contexts(
-    const std::vector<std::string>& contexts,
-    const SentencePieceConfig& config) {
-  SentencePieceTokenizationResult result;
+struct SentencePieceTokenizer::Impl {
+  explicit Impl(SentencePieceConfig value) : config(std::move(value)) {
+    const auto load_status = processor.Load(config.model_path);
+    if (!load_status.ok()) {
+      error = "failed to load SentencePiece model: " + load_status.ToString();
+      return;
+    }
+
+    std::unordered_set<int> unique_boundary_ids;
+    for (int id = 0; id < processor.GetPieceSize(); ++id) {
+      const std::string piece = processor.IdToPiece(id);
+      if (!starts_with_word_boundary(piece)) continue;
+      const auto mapped =
+          map_piece_id(processor, config.symbol_table, piece, false);
+      if (mapped) unique_boundary_ids.insert(*mapped);
+    }
+    boundary_ids.assign(unique_boundary_ids.begin(), unique_boundary_ids.end());
+    std::sort(boundary_ids.begin(), boundary_ids.end());
+  }
+
+  SentencePieceConfig config;
   sentencepiece::SentencePieceProcessor processor;
-  const auto load_status = processor.Load(config.model_path);
-  if (!load_status.ok()) {
-    result.error =
-        "failed to load SentencePiece model: " + load_status.ToString();
+  std::vector<int> boundary_ids;
+  std::string error;
+};
+
+SentencePieceTokenizer::SentencePieceTokenizer() = default;
+
+SentencePieceTokenizer::SentencePieceTokenizer(SentencePieceConfig config)
+    : impl_(std::make_shared<Impl>(std::move(config))) {}
+
+SentencePieceTokenizer::~SentencePieceTokenizer() = default;
+SentencePieceTokenizer::SentencePieceTokenizer(const SentencePieceTokenizer&) =
+    default;
+SentencePieceTokenizer& SentencePieceTokenizer::operator=(
+    const SentencePieceTokenizer&) = default;
+SentencePieceTokenizer::SentencePieceTokenizer(
+    SentencePieceTokenizer&&) noexcept = default;
+SentencePieceTokenizer& SentencePieceTokenizer::operator=(
+    SentencePieceTokenizer&&) noexcept = default;
+
+bool SentencePieceTokenizer::valid() const {
+  return impl_ && impl_->error.empty();
+}
+
+const char* SentencePieceTokenizer::error() const {
+  return impl_ ? impl_->error.c_str() : "SentencePiece tokenizer is not loaded";
+}
+
+SentencePieceTokenizationResult SentencePieceTokenizer::tokenize(
+    const std::vector<std::string>& contexts) const {
+  SentencePieceTokenizationResult result;
+  if (!valid()) {
+    result.error = error();
     return result;
   }
 
@@ -85,14 +131,16 @@ SentencePieceTokenizationResult tokenize_sentencepiece_contexts(
     if (text.empty()) continue;
 
     std::vector<std::string> pieces;
-    if (!encode_context_pieces(processor, text, config.add_word_boundary,
-                               pieces, result.error))
+    if (!encode_context_pieces(impl_->processor, text,
+                               impl_->config.add_word_boundary, pieces,
+                               result.error))
       return result;
 
     std::vector<int> ids;
     ids.reserve(pieces.size());
     for (const std::string& piece : pieces) {
-      const auto id = map_piece_id(processor, config.symbol_table, piece, true);
+      const auto id = map_piece_id(impl_->processor, impl_->config.symbol_table,
+                                   piece, true);
       if (!id) {
         std::ostringstream message;
         message << "SentencePiece piece '" << piece
@@ -105,19 +153,7 @@ SentencePieceTokenizationResult tokenize_sentencepiece_contexts(
     }
     if (!ids.empty()) result.context_token_ids.push_back(std::move(ids));
   }
-
-  std::unordered_set<int> boundary_ids;
-  for (int id = 0; id < processor.GetPieceSize(); ++id) {
-    const std::string piece = processor.IdToPiece(id);
-    if (!starts_with_word_boundary(piece)) continue;
-    const auto mapped =
-        map_piece_id(processor, config.symbol_table, piece, false);
-    if (mapped) boundary_ids.insert(*mapped);
-  }
-  result.word_boundary_token_ids.assign(boundary_ids.begin(),
-                                        boundary_ids.end());
-  std::sort(result.word_boundary_token_ids.begin(),
-            result.word_boundary_token_ids.end());
+  result.word_boundary_token_ids = impl_->boundary_ids;
   return result;
 }
 
