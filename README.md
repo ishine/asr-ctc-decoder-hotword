@@ -15,8 +15,9 @@
 pip install asr-decoder
 ```
 
-仓库同时提供无第三方依赖的 Rust crate，见 [`rust/`](rust/README.md)。Rust API 接收连续的
-`f32` log probability 矩阵，并与 Python 版一样支持流式搜索、N-best、时间戳和 token ID 热词。
+仓库同时提供无第三方依赖的 Rust crate 和 C++17 静态库，分别见
+[`rust/`](rust/README.md) 和 [`cpp/`](cpp/)。两者都接收连续、按行存储的 log probability
+矩阵，并支持流式搜索、N-best、时间戳和 token ID 热词。
 
 ## 基本用法
 

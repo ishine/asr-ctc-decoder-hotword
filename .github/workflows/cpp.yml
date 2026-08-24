@@ -1,0 +1,19 @@
+name: C++
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build-cpp -DBUILD_TESTING=ON
+      - run: cmake --build build-cpp --config Release
+      - run: ctest --test-dir build-cpp -C Release --output-on-failure
