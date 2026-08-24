@@ -28,6 +28,9 @@ Issues = "https://github.com/pengzhendong/asr-decoder/issues"
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }
 
+[tool.setuptools]
+packages = ["asr_decoder"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py39"
