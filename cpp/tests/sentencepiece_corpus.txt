@@ -1,0 +1,10 @@
+live captions make meetings accessible
+live captions preserve every spoken word
+enable live captions for this meeting
+caption quality matters for speech recognition
+sentencepiece tokenizes independent hotwords
+hotword detection should preserve word boundaries
+andy and they joined the live meeting
+speech decoding uses acoustic model token ids
+实时字幕让会议更容易理解
+语音识别热词必须使用正确的分词模型

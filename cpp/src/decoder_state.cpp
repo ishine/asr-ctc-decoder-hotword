@@ -5,12 +5,48 @@
 #include <limits>
 
 namespace asr_decoder::internal {
+namespace {
+
+bool normalize_contexts(DecoderConfig& config, std::string& error) {
+  if (config.contexts.empty()) return true;
+  if (!config.context_token_ids.empty()) {
+    error = "provide contexts or context_token_ids, not both";
+    return false;
+  }
+  if (config.sentencepiece.model_path.empty()) {
+    error = "sentencepiece.model_path is required when contexts are provided";
+    return false;
+  }
+
+  auto tokenization =
+      tokenize_sentencepiece_contexts(config.contexts, config.sentencepiece);
+  if (!tokenization) {
+    error = std::move(tokenization.error);
+    return false;
+  }
+  config.context_token_ids = std::move(tokenization.context_token_ids);
+  config.word_boundary_token_ids.insert(
+      config.word_boundary_token_ids.end(),
+      tokenization.word_boundary_token_ids.begin(),
+      tokenization.word_boundary_token_ids.end());
+
+  // Streams only need the normalized token IDs. Do not reload the model or
+  // copy a potentially large symbol table in create_stream().
+  config.contexts.clear();
+  config.sentencepiece = {};
+  return true;
+}
+
+}  // namespace
 
 DecoderState::DecoderState(DecoderConfig value)
     : config(std::move(value)),
       policy(
           config.context_policy.value_or(policy_for(config.hotword_strength))),
-      graph(config.context_token_ids, policy) {
+      graph({}, policy) {
+  normalize_contexts(config, config_error);
+  if (config_error.empty())
+    graph = ContextGraph(config.context_token_ids, policy);
   if (config.context_policy &&
       config.hotword_strength != HotwordStrength::kBalanced) {
     config_error = "provide context_policy or hotword_strength, not both";

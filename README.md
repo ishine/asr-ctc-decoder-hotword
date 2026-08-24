@@ -15,9 +15,10 @@
 pip install asr-decoder
 ```
 
-仓库同时提供无第三方依赖的 Rust crate 和 C++17 静态库，分别见
+仓库同时提供无第三方依赖的 Rust crate 和集成 SentencePiece 的 C++17 静态库，分别见
 [`rust/`](rust/README.md) 和 [`cpp/`](cpp/)。两者都接收连续、按行存储的 log probability
-矩阵，并支持流式搜索、N-best、时间戳和 token ID 热词。
+矩阵，并支持流式搜索、N-best、时间戳和热词；C++ 还可直接用模型的
+SentencePiece 模型编码文本热词。
 
 ## 基本用法
 

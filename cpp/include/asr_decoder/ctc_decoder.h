@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace asr_decoder {
@@ -42,6 +44,24 @@ struct ContextPolicy {
   static ContextPolicy low_false_activation();
 };
 
+struct SentencePieceConfig {
+  std::string model_path;
+  std::unordered_map<std::string, int> symbol_table;
+  bool add_word_boundary = true;
+};
+
+struct SentencePieceTokenizationResult {
+  std::vector<std::vector<int>> context_token_ids;
+  std::vector<int> word_boundary_token_ids;
+  std::string error;
+
+  explicit operator bool() const { return error.empty(); }
+};
+
+SentencePieceTokenizationResult tokenize_sentencepiece_contexts(
+    const std::vector<std::string>& contexts,
+    const SentencePieceConfig& config);
+
 struct DecoderConfig {
   std::vector<std::vector<int>> context_token_ids;
   HotwordStrength hotword_strength = HotwordStrength::kBalanced;
@@ -50,6 +70,8 @@ struct DecoderConfig {
   double frame_shift_ms = 0.0;
   std::optional<ContextPolicy> context_policy;
   std::vector<int> word_boundary_token_ids;
+  std::vector<std::string> contexts;
+  SentencePieceConfig sentencepiece;
 };
 
 struct DecodeOptions {
