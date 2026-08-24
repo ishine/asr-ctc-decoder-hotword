@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "decoder_state.h"
+#include "greedy_search.h"
 #include "prefix_beam_search.h"
 
 namespace asr_decoder {
@@ -29,6 +30,18 @@ const char* CTCDecoder::error() const {
 
 void CTCDecoder::reset() {
   if (impl_) impl_->reset();
+}
+
+CTCDecoder CTCDecoder::create_stream() const {
+  return CTCDecoder(impl_ ? impl_->config : DecoderConfig{});
+}
+
+DecodeResult CTCDecoder::greedy_search(const float* values, size_t frames,
+                                       size_t vocabulary_size,
+                                       GreedyOptions options) {
+  return impl_ ? internal::run_greedy_search(*impl_, values, frames,
+                                             vocabulary_size, options)
+               : DecodeResult{};
 }
 
 DecodeResult CTCDecoder::prefix_beam_search(const float* values, size_t frames,

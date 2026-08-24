@@ -8,6 +8,12 @@
 
 namespace asr_decoder::internal {
 
+struct ActiveContextCandidates {
+  std::vector<int> tokens;
+  size_t competing_count = 0;
+  bool truncated = false;
+};
+
 class ContextGraph {
  public:
   ContextGraph(const std::vector<std::vector<int>>& contexts,
@@ -17,7 +23,7 @@ class ContextGraph {
   int maximum_token() const { return maximum_token_; }
   size_t advance(size_t state, int token) const;
   std::vector<size_t> matches(size_t state) const;
-  std::vector<int> candidates(size_t state, size_t maximum) const;
+  ActiveContextCandidates active_candidates(size_t state, size_t maximum) const;
 
  private:
   struct State {

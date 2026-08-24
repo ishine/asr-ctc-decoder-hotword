@@ -9,7 +9,7 @@ namespace asr_decoder::internal {
 
 ContextGraph::ContextGraph(const std::vector<std::vector<int>>& contexts,
                            const Policy& policy)
-    : maximum_matches_(policy.max_completed_contexts) {
+    : maximum_matches_(policy.max_completed_contexts_per_token) {
   states_.emplace_back();
   std::set<std::vector<int>> seen;
   for (const std::vector<int>& tokens : contexts) {
@@ -55,18 +55,39 @@ std::vector<size_t> ContextGraph::matches(size_t state) const {
   return result;
 }
 
-std::vector<int> ContextGraph::candidates(size_t state, size_t maximum) const {
-  std::vector<int> result;
+ActiveContextCandidates ContextGraph::active_candidates(size_t state,
+                                                        size_t maximum) const {
+  ActiveContextCandidates result;
+  if (maximum == 0) {
+    result.truncated = !states_[state].transitions.empty();
+    return result;
+  }
   std::unordered_set<int> seen;
   while (true) {
-    for (int token : states_[state].transition_order) {
+    const State& current = states_[state];
+    result.competing_count = std::min(
+        maximum + 1, result.competing_count + current.transitions.size());
+    if (state == 0 &&
+        current.transitions.size() > maximum - result.tokens.size()) {
+      result.truncated = true;
+      return result;
+    }
+    for (int token : current.transition_order) {
       if (seen.insert(token).second) {
-        result.push_back(token);
-        if (result.size() == maximum) return result;
+        result.tokens.push_back(token);
+        if (result.tokens.size() == maximum) {
+          result.truncated =
+              state != 0 || std::any_of(current.transition_order.begin(),
+                                        current.transition_order.end(),
+                                        [&seen](int candidate) {
+                                          return !seen.count(candidate);
+                                        });
+          return result;
+        }
       }
     }
     if (state == 0) break;
-    state = states_[state].failure;
+    state = current.failure;
   }
   return result;
 }

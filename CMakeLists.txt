@@ -6,6 +6,7 @@ add_library(asr_decoder STATIC
     cpp/src/context_policy.cpp
     cpp/src/ctc_decoder.cpp
     cpp/src/decoder_state.cpp
+    cpp/src/greedy_search.cpp
     cpp/src/prefix_beam_search.cpp
     cpp/src/prefix_score.cpp)
 add_library(asr_decoder::asr_decoder ALIAS asr_decoder)

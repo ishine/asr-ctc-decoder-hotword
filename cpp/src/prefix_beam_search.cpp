@@ -2,24 +2,33 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace asr_decoder::internal {
 namespace {
 
-std::vector<std::pair<int, double>> top_k(const float* row, size_t size,
-                                          size_t count) {
-  std::vector<std::pair<int, double>> result;
+using Candidate = std::pair<int, double>;
+
+struct ContextCandidates {
+  std::vector<int> tokens;
+  std::unordered_set<int> root_tokens;
+  std::unordered_set<int> non_root_tokens;
+  size_t competing_count = 0;
+};
+
+std::vector<Candidate> top_k(const float* row, size_t size, size_t count) {
+  std::vector<Candidate> result;
   result.reserve(size);
   for (size_t token = 0; token < size; ++token) {
     result.emplace_back(static_cast<int>(token), row[token]);
   }
   const size_t kept = std::min(count, result.size());
   std::partial_sort(result.begin(), result.begin() + kept, result.end(),
-                    [](const auto& left, const auto& right) {
+                    [](const Candidate& left, const Candidate& right) {
                       if (left.second != right.second) {
                         return left.second > right.second;
                       }
@@ -32,99 +41,203 @@ std::vector<std::pair<int, double>> top_k(const float* row, size_t size,
 bool prepare_search(DecoderState& state, const float* values, size_t frames,
                     size_t vocabulary_size, DecodeOptions options,
                     SearchSettings& settings) {
-  state.error.clear();
-  if ((!values && frames) || vocabulary_size == 0 ||
-      static_cast<size_t>(state.config.blank_id) >= vocabulary_size ||
-      (!state.graph.empty() &&
-       static_cast<size_t>(state.graph.maximum_token()) >= vocabulary_size)) {
-    state.error = "invalid log-probability matrix or token ID";
-    return false;
-  }
+  if (!validate_input(state, values, frames, vocabulary_size)) return false;
   if (state.vocabulary_size && state.vocabulary_size != vocabulary_size) {
     state.error = "vocabulary_size changed during a stream";
     return false;
   }
+
   settings = settings_for(state.config.decoding_quality);
-  if (options.beam_size) settings.beam = options.beam_size;
-  if (options.token_beam_size) settings.token_beam = options.token_beam_size;
-  settings.token_beam = std::min(settings.token_beam, vocabulary_size);
+  if (state.vocabulary_size) {
+    settings.beam = state.beam_size;
+    settings.token_beam = state.token_beam_size;
+    if (options.beam_size && options.beam_size != state.beam_size) {
+      state.error = "beam_size changed during a stream";
+      return false;
+    }
+    const size_t requested_token_beam =
+        std::min(options.token_beam_size, vocabulary_size);
+    if (options.token_beam_size &&
+        requested_token_beam != state.token_beam_size) {
+      state.error = "token_beam_size changed during a stream";
+      return false;
+    }
+  } else {
+    if (options.beam_size) settings.beam = options.beam_size;
+    if (options.token_beam_size) settings.token_beam = options.token_beam_size;
+    settings.token_beam = std::min(settings.token_beam, vocabulary_size);
+  }
   if (settings.beam == 0 || settings.token_beam == 0) {
     state.error = "beam sizes must be positive";
     return false;
   }
-  if (state.beam_size && state.beam_size != settings.beam) {
-    state.error = "beam_size changed during a stream";
-    return false;
-  }
-  if (state.token_beam_size && state.token_beam_size != settings.token_beam) {
-    state.error = "token_beam_size changed during a stream";
-    return false;
-  }
-  for (size_t index = 0; index < frames * vocabulary_size; ++index) {
-    if (std::isnan(values[index]) ||
-        values[index] == std::numeric_limits<float>::infinity()) {
-      state.error =
-          "log probabilities must not contain NaN or positive infinity";
-      return false;
-    }
-  }
-  for (size_t frame = 0; frame < frames; ++frame) {
-    bool has_finite_value = false;
-    for (size_t token = 0; token < vocabulary_size; ++token) {
-      has_finite_value |=
-          std::isfinite(values[frame * vocabulary_size + token]);
-    }
-    if (!has_finite_value) {
-      state.error = "every frame must contain a finite log probability";
-      return false;
-    }
-  }
-  state.vocabulary_size = vocabulary_size;
-  state.beam_size = settings.beam;
-  state.token_beam_size = settings.token_beam;
+
   return true;
+}
+
+ContextCandidates collect_context_candidates(DecoderState& state,
+                                             const ContextGraph* graph) {
+  ContextCandidates result;
+  const size_t maximum = state.policy.max_injected_candidates;
+  if (!graph || maximum == 0) return result;
+
+  std::unordered_set<int> token_set;
+  std::unordered_set<size_t> seen_states;
+  bool truncated = false;
+  for (const auto& hypothesis : state.hypotheses) {
+    const size_t context_state = hypothesis.second.context_state;
+    if (!seen_states.insert(context_state).second) continue;
+    ActiveContextCandidates active =
+        graph->active_candidates(context_state, maximum);
+    result.competing_count =
+        std::min(maximum + 1, result.competing_count + active.competing_count);
+    truncated |= active.truncated;
+    auto& target =
+        context_state == 0 ? result.root_tokens : result.non_root_tokens;
+    target.insert(active.tokens.begin(), active.tokens.end());
+    for (int token : active.tokens) {
+      if (token_set.count(token)) continue;
+      if (result.tokens.size() == maximum) {
+        truncated = true;
+        break;
+      }
+      result.tokens.push_back(token);
+      token_set.insert(token);
+    }
+  }
+  if (truncated) ++state.diagnostics.context_candidate_limit_hits;
+  state.diagnostics.max_context_candidates_per_frame = std::max(
+      state.diagnostics.max_context_candidates_per_frame, result.tokens.size());
+  state.diagnostics.evaluated_context_candidates += result.tokens.size();
+  return result;
+}
+
+std::unordered_set<int> apply_word_boundary_guard(
+    DecoderState& state, const std::vector<Candidate>& acoustic,
+    ContextCandidates& context, double best, double threshold) {
+  std::unordered_set<int> blocked;
+  if (state.word_boundary_token_ids.empty()) return blocked;
+
+  double boundary_best = -std::numeric_limits<double>::infinity();
+  std::unordered_set<int> acoustic_tokens;
+  for (const auto& [token, probability] : acoustic) {
+    acoustic_tokens.insert(token);
+    if (state.word_boundary_token_ids.count(token)) {
+      boundary_best = std::max(boundary_best, probability);
+    }
+  }
+  if (boundary_best < best - threshold) return blocked;
+
+  for (int token : context.non_root_tokens) {
+    if (!context.root_tokens.count(token) &&
+        !state.word_boundary_token_ids.count(token) &&
+        !acoustic_tokens.count(token)) {
+      blocked.insert(token);
+    }
+  }
+  if (!blocked.empty()) {
+    context.tokens.erase(
+        std::remove_if(context.tokens.begin(), context.tokens.end(),
+                       [&blocked](int token) { return blocked.count(token); }),
+        context.tokens.end());
+    state.diagnostics.boundary_suppressed_context_candidates += blocked.size();
+  }
+  return blocked;
+}
+
+std::vector<Candidate> frame_candidates(DecoderState& state, const float* row,
+                                        const std::vector<Candidate>& acoustic,
+                                        ContextCandidates& context,
+                                        const SearchSettings& settings,
+                                        double context_threshold) {
+  const double best = acoustic.front().second;
+  const auto blocked = apply_word_boundary_guard(state, acoustic, context, best,
+                                                 context_threshold);
+  std::map<int, double> scores;
+  for (const auto& [token, probability] : acoustic) {
+    scores[token] = probability;
+  }
+  scores[state.config.blank_id] = row[state.config.blank_id];
+  for (int token : blocked) scores.erase(token);
+
+  for (int token : context.tokens) {
+    if (scores.count(token)) continue;
+    ++state.diagnostics.gathered_context_candidates;
+    const double probability = row[token];
+    if (probability >= best - context_threshold) scores[token] = probability;
+  }
+
+  std::vector<Candidate> candidates;
+  for (const auto& [token, probability] : scores) {
+    if (probability >= best - settings.prune_threshold ||
+        token == state.config.blank_id) {
+      candidates.emplace_back(token, probability);
+    }
+  }
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate& left, const Candidate& right) {
+              if (left.second != right.second) {
+                return left.second > right.second;
+              }
+              return left.first > right.first;
+            });
+  return candidates;
 }
 
 void advance_frame(DecoderState& state, const float* row,
                    size_t vocabulary_size, const SearchSettings& settings) {
-  const ContextGraph* graph = state.graph.empty() ? nullptr : &state.graph;
-  auto acoustic = top_k(row, vocabulary_size, settings.token_beam);
+  const ContextGraph* graph = state.context_enabled() ? &state.graph : nullptr;
+  const auto acoustic = top_k(row, vocabulary_size, settings.token_beam);
   if (acoustic.empty()) return;
-  const double best = acoustic.front().second;
-  const double blank = row[state.config.blank_id];
-  const double threshold =
-      state.policy.context_prune_threshold * gating_factor(acoustic, blank);
 
-  std::map<int, double> candidates;
-  for (const auto& [token, probability] : acoustic) {
-    if (probability >= best - settings.prune_threshold ||
-        token == state.config.blank_id) {
-      candidates[token] = probability;
+  double acoustic_scale = 1.0;
+  double confidence_factor = 1.0;
+  const bool gating_enabled = graph && state.policy.gating.enabled;
+  if (gating_enabled) {
+    const size_t gating_width = std::min<size_t>(8, vocabulary_size);
+    std::vector<Candidate> gating;
+    if (settings.token_beam >= gating_width) {
+      gating.assign(acoustic.begin(), acoustic.begin() + gating_width);
+    } else {
+      gating = top_k(row, vocabulary_size, gating_width);
     }
+    const auto stats =
+        analyze_frame(state.policy.gating, gating, row[state.config.blank_id]);
+    acoustic_scale = stats.first;
+    confidence_factor = stats.second;
+    state.diagnostics.gating_acoustic_scale_sum += acoustic_scale;
+    ++state.diagnostics.gating_frames;
   }
-  candidates[state.config.blank_id] = blank;
-  if (graph) {
-    std::unordered_set<int> injected;
-    for (const auto& hypothesis : state.hypotheses) {
-      for (int token :
-           graph->candidates(hypothesis.second.context_state,
-                             state.policy.max_injected_candidates)) {
-        if (injected.size() == state.policy.max_injected_candidates) break;
-        injected.insert(token);
-      }
-    }
-    for (int token : injected) {
-      const double probability = row[token];
-      if (probability >= best - threshold) candidates[token] = probability;
-    }
+
+  ContextCandidates context = collect_context_candidates(state, graph);
+  const double active_factor =
+      active_context_factor(state.policy.gating, context.competing_count,
+                            state.policy.max_injected_candidates);
+  const double gating_factor =
+      acoustic_scale * confidence_factor * active_factor;
+  if (gating_enabled && row[state.config.blank_id] < acoustic.front().second) {
+    state.diagnostics.gating_factor_sum += gating_factor;
+    ++state.diagnostics.nonblank_gating_frames;
   }
+  const double context_threshold =
+      state.policy.context_token_prune_threshold * gating_factor;
+  const auto candidates = frame_candidates(state, row, acoustic, context,
+                                           settings, context_threshold);
 
   std::map<std::vector<int>, PrefixScore> next;
+  std::vector<std::vector<int>> insertion_order;
+  auto destination_for = [&next, &insertion_order](
+                             const std::vector<int>& prefix) -> PrefixScore& {
+    auto [found, inserted] = next.try_emplace(prefix);
+    if (inserted) insertion_order.push_back(prefix);
+    return found->second;
+  };
+
   ++state.processed_frames;
   for (const auto& [token, probability] : candidates) {
     for (const auto& [prefix, source] : state.hypotheses) {
       if (token == state.config.blank_id) {
-        PrefixScore& destination = next[prefix];
+        PrefixScore& destination = destination_for(prefix);
         destination.blank =
             log_add(destination.blank, source.acoustic() + probability);
         const double viterbi = source.viterbi() + probability;
@@ -137,7 +250,7 @@ void advance_frame(DecoderState& state, const float* row,
       }
 
       if (!prefix.empty() && prefix.back() == token) {
-        PrefixScore& repeated = next[prefix];
+        PrefixScore& repeated = destination_for(prefix);
         repeated.nonblank =
             log_add(repeated.nonblank, source.nonblank + probability);
         if (source.viterbi_nonblank + probability > repeated.viterbi_nonblank) {
@@ -153,7 +266,7 @@ void advance_frame(DecoderState& state, const float* row,
 
         std::vector<int> extended_prefix = prefix;
         extended_prefix.push_back(token);
-        PrefixScore& after_blank = next[extended_prefix];
+        PrefixScore& after_blank = destination_for(extended_prefix);
         after_blank.nonblank =
             log_add(after_blank.nonblank, source.blank + probability);
         if (source.viterbi_blank + probability > after_blank.viterbi_nonblank) {
@@ -169,7 +282,7 @@ void advance_frame(DecoderState& state, const float* row,
 
       std::vector<int> extended_prefix = prefix;
       extended_prefix.push_back(token);
-      PrefixScore& destination = next[extended_prefix];
+      PrefixScore& destination = destination_for(extended_prefix);
       destination.nonblank =
           log_add(destination.nonblank, source.acoustic() + probability);
       if (source.viterbi() + probability > destination.viterbi_nonblank) {
@@ -182,15 +295,18 @@ void advance_frame(DecoderState& state, const float* row,
       advance_context(graph, state.policy, source, destination, token);
     }
   }
-  state.hypotheses.assign(std::make_move_iterator(next.begin()),
-                          std::make_move_iterator(next.end()));
-  std::sort(state.hypotheses.begin(), state.hypotheses.end(),
-            [](const auto& left, const auto& right) {
-              if (left.second.total() != right.second.total()) {
-                return left.second.total() > right.second.total();
-              }
-              return left.first < right.first;
-            });
+
+  state.hypotheses.clear();
+  for (const auto& prefix : insertion_order) {
+    auto found = next.find(prefix);
+    if (std::isfinite(found->second.acoustic())) {
+      state.hypotheses.push_back({prefix, std::move(found->second)});
+    }
+  }
+  std::stable_sort(state.hypotheses.begin(), state.hypotheses.end(),
+                   [](const auto& left, const auto& right) {
+                     return left.second.total() > right.second.total();
+                   });
   if (state.hypotheses.size() > settings.beam) {
     state.hypotheses.resize(settings.beam);
   }
@@ -223,6 +339,40 @@ DecodeResult build_result(const DecoderState& state, DecodeOptions options) {
     }
     result.scores.push_back({score.acoustic(), score.context(), score.total()});
   }
+
+  if (options.return_gating_diagnostics) {
+    const bool enabled = state.context_enabled() && state.policy.gating.enabled;
+    GatingDiagnostics diagnostics;
+    diagnostics.contextual_biasing = state.context_enabled();
+    diagnostics.adaptive_context_gating = enabled;
+    diagnostics.gating_frames = enabled ? state.diagnostics.gating_frames : 0;
+    if (enabled && state.diagnostics.gating_frames) {
+      diagnostics.mean_gating_acoustic_scale =
+          state.diagnostics.gating_acoustic_scale_sum /
+          state.diagnostics.gating_frames;
+    }
+    if (enabled && state.diagnostics.nonblank_gating_frames) {
+      diagnostics.mean_gating_factor = state.diagnostics.gating_factor_sum /
+                                       state.diagnostics.nonblank_gating_frames;
+    }
+    diagnostics.nonblank_gating_frames =
+        enabled ? state.diagnostics.nonblank_gating_frames : 0;
+    diagnostics.evaluated_context_candidates =
+        state.diagnostics.evaluated_context_candidates;
+    diagnostics.gathered_context_candidates =
+        state.diagnostics.gathered_context_candidates;
+    diagnostics.max_context_candidates_per_frame =
+        state.diagnostics.max_context_candidates_per_frame;
+    diagnostics.context_candidate_limit_hits =
+        state.diagnostics.context_candidate_limit_hits;
+    diagnostics.word_boundary_aware_context =
+        !state.word_boundary_token_ids.empty();
+    diagnostics.boundary_suppressed_context_candidates =
+        state.diagnostics.boundary_suppressed_context_candidates;
+    diagnostics.beam_size = state.beam_size;
+    diagnostics.token_beam_size = state.token_beam_size;
+    result.gating = diagnostics;
+  }
   return result;
 }
 
@@ -237,6 +387,12 @@ DecodeResult run_prefix_beam_search(DecoderState& state, const float* values,
   if (!prepare_search(state, values, frames, vocabulary_size, options,
                       settings)) {
     return result;
+  }
+  if (!lock_decode_mode(state, DecodeMode::kPrefixBeam)) return result;
+  if (state.vocabulary_size == 0) {
+    state.vocabulary_size = vocabulary_size;
+    state.beam_size = settings.beam;
+    state.token_beam_size = settings.token_beam;
   }
   for (size_t frame = 0; frame < frames; ++frame) {
     advance_frame(state, values + frame * vocabulary_size, vocabulary_size,

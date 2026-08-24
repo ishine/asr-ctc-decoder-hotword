@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -8,12 +9,7 @@
 
 namespace asr_decoder::internal {
 
-struct Policy {
-  double completion_bonus = 5.0;
-  double context_prune_threshold = 2.5;
-  size_t max_injected_candidates = 12;
-  size_t max_completed_contexts = 8;
-};
+using Policy = ContextPolicy;
 
 struct SearchSettings {
   size_t beam = 8;
@@ -23,7 +19,11 @@ struct SearchSettings {
 
 Policy policy_for(HotwordStrength strength);
 SearchSettings settings_for(DecodingQuality quality);
-double gating_factor(const std::vector<std::pair<int, double>>& top,
-                     double blank);
+bool validate_policy(const Policy& policy, std::string& error);
+std::pair<double, double> analyze_frame(
+    const AdaptiveGatingConfig& config,
+    const std::vector<std::pair<int, double>>& top, double blank);
+double active_context_factor(const AdaptiveGatingConfig& config, size_t count,
+                             size_t maximum);
 
 }  // namespace asr_decoder::internal
