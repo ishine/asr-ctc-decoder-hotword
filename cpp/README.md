@@ -28,3 +28,7 @@ target_link_libraries(your-target PRIVATE asr_decoder::asr_decoder)
 `token_beam_size` 必须保持不变；最后一块设置 `finalize = true`，或显式调用
 `reset()` 开始下一条音频。模型 tokenizer 以及“热词文本到 token ID”的转换由调用方负责。
 接口不抛异常；构造或搜索失败时 `valid()` 返回 `false`，具体原因由 `error()` 返回。
+
+实现按职责拆分：`context_graph` 管理热词状态图，`context_policy` 管理预设和自适应门控，
+`prefix_score` 管理 CTC 前缀分数与对齐，`prefix_beam_search` 执行搜索，`decoder_state`
+保存流式状态，`ctc_decoder` 只保留公开 API 适配。

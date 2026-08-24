@@ -1,7 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
 project(asr_decoder LANGUAGES CXX)
 
-add_library(asr_decoder STATIC cpp/src/ctc_decoder.cpp)
+add_library(asr_decoder STATIC
+    cpp/src/context_graph.cpp
+    cpp/src/context_policy.cpp
+    cpp/src/ctc_decoder.cpp
+    cpp/src/decoder_state.cpp
+    cpp/src/prefix_beam_search.cpp
+    cpp/src/prefix_score.cpp)
 add_library(asr_decoder::asr_decoder ALIAS asr_decoder)
 target_compile_features(asr_decoder PUBLIC cxx_std_17)
 target_include_directories(
