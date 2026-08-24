@@ -1,0 +1,19 @@
+[package]
+name = "asr-decoder"
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+description = "Streaming CTC decoder with contextual biasing"
+repository = "https://github.com/pengzhendong/asr-decoder"
+
+[lib]
+name = "asr_decoder"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
